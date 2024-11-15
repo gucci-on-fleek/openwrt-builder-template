@@ -1,0 +1,51 @@
+# OpenWRT Declarative Image Builder
+# https://github.com/gucci-on-fleek/openwrt-builder-template
+# SPDX-License-Identifier: MPL-2.0+
+# SPDX-FileCopyrightText: 2024 Max Chernoff
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    name: Build
+    steps:
+      - name: Checkout the Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+            python-version: "3.13"
+
+      - name: Install Dependencies
+        run: |
+          pip install \
+            cryptography \
+            deepmerge \
+            'lark[interegular]' \
+            podman
+
+
+      - name: Build
+        env:
+            OPENWRT_KEY: ${{ secrets.OPENWRT_KEY }}
+        run: |
+            ./build.sh
+            echo "datetime=$(TZ=':America/Edmonton' date '+%F_%H%M')" >> $GITHUB_ENV
+            echo "bin_hash=$(sha256sum *.bin | cut -d' ' -f1)" >> $GITHUB_ENV
+
+      - name: Generate Release
+        uses: ncipollo/release-action@v1
+        if: ${{ github.event_name == 'push' }}
+        with:
+          artifacts: "*.bin"
+          tag: ${{ env.datetime }}
+          commit: ${{ github.sha }}
+          name: ${{ env.datetime }}
+          body: "`sha256:${{ env.bin_hash }}`"

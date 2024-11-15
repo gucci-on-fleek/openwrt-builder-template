@@ -1,0 +1,6 @@
+# OpenWRT Declarative Image Builder
+# https://github.com/gucci-on-fleek/openwrt-builder-template
+# SPDX-License-Identifier: MPL-2.0+
+# SPDX-FileCopyrightText: 2024 Max Chernoff
+*.bin
+__pycache__/

@@ -1,0 +1,134 @@
+# OpenWRT Declarative Image Builder
+# https://github.com/gucci-on-fleek/openwrt-builder-template
+# SPDX-License-Identifier: MPL-2.0+ OR CC0-1.0+
+# SPDX-FileCopyrightText: 2024 Max Chernoff
+
+# Basic configuration settings go in this section.
+
+[image]
+# The version of OpenWRT to build. Versions like "23.05.5" are pinned to a
+# specific release, while versions like "22.03" will build the latest release
+# from that branch.
+version = "openwrt-24.10"
+
+# The target is the portion of the platform before the slash "/", and the
+# subtarget is the portion after the slash. To get the platform name, use the
+# firmware selector:
+#
+#     https://firmware-selector.openwrt.org
+#
+target = "ath79"
+subtarget = "generic"
+
+# The profile is the name of the device to build for. You can also get this from
+# the firmware selector.
+profile = "tplink_archer-c7-v5"
+
+# The packages that you want installed in the image.
+packages = [
+    "grep",
+    "luci-app-statistics",
+    "luci-mod-dashboard",
+    "luci-proto-wireguard",
+    "luci-ssl",
+    # You can precede a package name with a dash "-" to remove it from the
+    # image.
+    "-kmod-ath10k-ct",
+    "kmod-ath10k-ct-smallbuffers",
+]
+
+# The files section contains files that you want to add or modify in the image.
+[[files]]
+# You can use the `find` and `replace` keys to modify the contents of a file
+# using a regular expression. This example changes the root password in the
+# image.
+path = "/etc/shadow"
+find = "^root.*$"
+# Items prefixed with "ENC:" are encrypted. To encrypt an item, run the
+# `build.py` script. To ensure that the builder can decrypt the item, you must
+# place the encryption key in the GitHub Actions `OPENWRT_KEY` secret.
+replace = "ENC:5&2u(2Pwi%t^c*d#>~V#Q{Ceek67Ou!uX^K*@EcLLznBay;2#B9Z~DlnZ67R$I7pw<MSac"
+
+
+[[files]]
+path = "/etc/dropbear/authorized_keys"
+# Instead of using `find` and `replace`, you can use the `content` key to write
+# out the complete contents of a file.
+content = """
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKbq1PJt4dk2RrtNmPdGmEi2Wv8StNeqHvZ1tKRdR54D max@max-laptop
+"""
+
+# Subkeys of the `uci` section set UCI configuration values. The format is
+#
+#     [uci.<package>.<section-type>.<section-name>]
+#
+# All fields must be either strings or arrays of strings.
+
+[uci.wireless.wifi-device.radio0]
+channel = "36"
+band = "5g"
+htmode = "VHT80"
+txpower = "23"
+country = "CA"
+cell_density = "2"
+disabled = "0"
+
+
+[uci.wireless.wifi-iface.default_radio0]
+device = "radio0"
+network = "lan"
+mode = "ap"
+ssid = "My SSID"
+key = "ENC:&+R-MC!BBw!-j7^XsWlv!7|$sYwE2m6r(W"
+ieee80211r = "1"
+encryption = "psk2+ccmp"
+
+
+[uci.wireless.wifi-device.radio1]
+channel = "1"
+band = "2g"
+htmode = "HT40"
+country = "CA"
+cell_density = "2"
+disabled = "0"
+
+
+[uci.wireless.wifi-iface.default_radio1]
+device = "radio1"
+network = "lan"
+mode = "ap"
+ssid = "My SSID"
+key = "ENC:&+R-MC!BBw!-j7^XsWlv!7|$sYwE2m6r(W"
+ieee80211r = "1"
+encryption = "psk2+ccmp"
+
+
+[uci.dropbear.dropbear.dropbear]
+PasswordAuth = "off"
+RootPasswordAuth = "off"
+
+
+# Unnamed sections are a little tricky to configure, so try and avoid them if
+# possible.
+[uci.system.system."@system[0]"]
+hostname = "OpenWrt"
+zonename = "America/Edmonton"
+timezone = "MST7MDT,M3.2.0,M11.1.0"
+zram_comp_algo = "lzo"
+
+
+[uci.dhcp.host.my_laptop]
+name = "my-laptop"
+dns = "1"
+mac = [
+    "AA:2B:7E:04:A1:52", # WiFi
+    "E2:C8:8E:38:08:A3", # Ethernet
+]
+ip = "192.168.1.10"
+
+
+[uci.dhcp.host.my_phone]
+name = "my-phone"
+dns = "1"
+mac = "91:15:C5:2D:55:DF"
+ip = "10.77.0.11"
