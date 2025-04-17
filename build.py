@@ -2,7 +2,7 @@
 # OpenWRT Declarative Image Builder
 # https://github.com/gucci-on-fleek/openwrt-builder-template
 # SPDX-License-Identifier: MPL-2.0+
-# SPDX-FileCopyrightText: 2024 Max Chernoff
+# SPDX-FileCopyrightText: 2025 Max Chernoff
 
 ###############
 ### Imports ###
@@ -19,6 +19,7 @@ from pprint import pprint
 from re import MULTILINE
 from re import sub as re_sub
 from shutil import copy2 as file_copy
+from sys import stdin, stdout
 from time import sleep
 from tomllib import load as load_toml
 from typing import Iterable, Iterator, Self, TypeAlias, TypedDict, cast
@@ -28,7 +29,6 @@ from cryptography.hazmat.primitives.ciphers.algorithms import ChaCha20
 from deepmerge import always_merger
 from lark import Lark, Transformer
 from podman import PodmanClient
-
 
 ####################
 ### Type Aliases ###
@@ -99,7 +99,7 @@ UCI_GRAMMAR = r""" # The EBNF grammar for a UCI config file
     %import common.WS_INLINE -> _WS
 """
 
-NAME_BY_TYPE = ("system", "nlbwmon")
+NAME_BY_TYPE = ("system", "firewall")
 
 
 #########################
@@ -116,23 +116,27 @@ class Crypto:
 
         self.key = b85decode(key)
 
-    def encrypt(self, data: str) -> str:
+    def encrypt(self, data: str | bytes) -> str:
         """Encrypt a single string."""
+        if isinstance(data, str):
+            data = data.encode("ascii")
 
         nonce = secrets.token_bytes(16)
         cipher = Cipher(algorithm=ChaCha20(self.key, nonce), mode=None)
         encryptor = cipher.encryptor()
-        ct = encryptor.update(data.encode("ascii")) + encryptor.finalize()
+        ct = encryptor.update(data) + encryptor.finalize()
         return b85encode(nonce + ct).decode("ascii")
 
-    def decrypt(self, data: str) -> str:
+    def decrypt(self, data: str | bytes) -> bytes:
         """Decrypt a single string."""
+        if isinstance(data, str):
+            data = data.encode("ascii")
 
         decoded = b85decode(data)
         nonce, ct = decoded[:16], decoded[16:]
         cipher = Cipher(algorithm=ChaCha20(self.key, nonce), mode=None)
         decryptor = cipher.decryptor()
-        return (decryptor.update(ct) + decryptor.finalize()).decode("ascii")
+        return decryptor.update(ct) + decryptor.finalize()
 
     def decrypt_all_inplace(self, data: dict | list) -> None:
         """Decrypt all encrypted strings in a dictionary or list."""
@@ -149,6 +153,8 @@ class Crypto:
         for key, value in iter:
             if isinstance(value, str) and value.startswith("ENC:"):
                 data[key] = self.decrypt(value[4:])
+            elif isinstance(value, bool):
+                data[key] = "1" if (value == True) else "0"
             elif isinstance(value, (list, dict)):
                 self.decrypt_all_inplace(value)
 
@@ -286,8 +292,15 @@ class Uci:
                     for key, value in config.items():
                         if isinstance(value, list):
                             for item in value:
-                                out.append(f"add_list {fqn}.{key}='{item}'")
+                                if isinstance(item, bytes):
+                                    item = item.decode("utf-8")
+                                if item == "_delete":
+                                    out.append(f"delete {fqn}.{key}")
+                                else:
+                                    out.append(f"add_list {fqn}.{key}='{item}'")
                         else:
+                            if isinstance(value, bytes):
+                                value = value.decode("utf-8")
                             out.append(f"set {fqn}.{key}='{value}'")
 
                     out.append("")
@@ -325,9 +338,16 @@ class Uci:
 
                     for key, value in config.items():
                         if isinstance(value, list):
+                            for i, item in enumerate(value):
+                                if item == "_delete":
+                                    value = value[i + 1 :]
                             for item in value:
+                                if isinstance(item, bytes):
+                                    item = item.decode("utf-8")
                                 out.append(f"\tlist {key} '{item}'")
                         else:
+                            if isinstance(value, bytes):
+                                value = value.decode("utf-8")
                             out.append(f"\toption {key} '{value}'")
 
                     out.append("")
@@ -357,7 +377,7 @@ def process_uci(
             with path.open("wt") as f:
                 f.write(data.out_uci())
         else:
-            path = container_root / f"etc/uci-defaults/99-{package}"
+            path = container_root / f"etc/uci-defaults/98-{package}"
 
             with path.open("wt") as f:
                 f.write(data.out_batch())
@@ -376,19 +396,33 @@ def process_files(
     for file in files:
         path = container_root / file["path"].removeprefix("/")
 
+        for parent in reversed(path.parents):
+            if not parent.is_dir():
+                parent.mkdir()
+                chown(parent, uid, gid)
+
         if "find" in file:
             with path.open("rt") as f:
                 contents = f.read()
 
-            contents = re_sub(
-                file["find"], file["replace"], contents, flags=MULTILINE
-            )
+            find = file["find"]
+            if isinstance(find, bytes):
+                find = find.decode("utf-8")
+
+            replace = file["replace"]
+            if isinstance(replace, bytes):
+                replace = replace.decode("utf-8")
+
+            contents = re_sub(find, replace, contents, flags=MULTILINE)
 
             with path.open("wt") as f:
                 f.write(contents)
         else:
-            with path.open("wt") as f:
-                f.write(file["content"])
+            with path.open("wb") as f:
+                contents = file["content"]
+                if isinstance(contents, str):
+                    contents = contents.encode("utf-8")
+                f.write(contents)
 
         chown(path, uid, gid)
 
@@ -475,6 +509,14 @@ def process_cmdline(filename: BufferedReader, crypto: Crypto) -> None:
     build(config)
 
 
+def cmdline_string(arg: str) -> str | bytes:
+    """Handles processing a string from the command line."""
+    if arg == "-":
+        return stdin.buffer.read().strip()
+    else:
+        return arg
+
+
 if __name__ == "__main__":
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
@@ -507,10 +549,13 @@ if __name__ == "__main__":
 
     match [args, crypto]:
         case [{"encrypt": str(encrypt)}, Crypto as crypto]:
+            encrypt = cmdline_string(encrypt)
             print("ENC:", crypto.encrypt(encrypt), sep="")
 
         case [{"decrypt": str(decrypt)}, Crypto as crypto]:
-            print(crypto.decrypt(decrypt[4:]))
+            input = cmdline_string(decrypt)
+            output = crypto.decrypt(input[4:])
+            stdout.buffer.write(output + b"\n")
 
         case [{"keygen": True}, _]:
             print(b85encode(secrets.token_bytes(32)).decode("ascii"))
